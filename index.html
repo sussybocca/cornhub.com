@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>FriendHub Code Editor</title>
+<style>
+  body { margin: 0; font-family: Arial, sans-serif; }
+  #top-bar { padding: 10px; background: #222; color: white; display: flex; gap: 10px; align-items: center; }
+  #file-list button { margin-right: 5px; }
+  #editor-container { display: flex; height: 70vh; }
+  #editor { flex: 1; border-right: 1px solid #ccc; }
+  #preview { flex: 1; border-left: 1px solid #ccc; background: #f9f9f9; }
+  #chat-container { height: 20vh; display: flex; flex-direction: column; border-top: 1px solid #ccc; }
+  #chat-log { flex: 1; overflow-y: auto; padding: 5px; background: #eee; }
+  #chat-input { display: flex; }
+  #chat-input input { flex: 1; padding: 5px; }
+</style>
+</head>
+<body>
+
+<div id="top-bar">
+  Username: <input type="text" id="username" placeholder="Username">
+  Project: <input type="text" id="project" placeholder="Project name">
+  <button id="load-files">Load Files</button>
+  <select id="language-select">
+    <option value="javascript">JavaScript</option>
+    <option value="html">HTML</option>
+    <option value="python">Python</option>
+  </select>
+  <select id="theme-select">
+    <option value="vs-dark">Dark</option>
+    <option value="vs-light">Light</option>
+  </select>
+  <button id="create-file">New File</button>
+  <button id="save-file">Save File</button>
+  <button id="publish-project">Publish Project</button>
+</div>
+
+<div id="editor-container">
+  <div id="editor"></div>
+  <iframe id="preview"></iframe>
+</div>
+
+<div id="chat-container">
+  <div id="chat-log"></div>
+  <div id="chat-input">
+    <input type="text" id="chat-message" placeholder="Type a message...">
+    <button id="send-message">Send</button>
+  </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.34.1/min/vs/loader.min.js"></script>
+<script>
+let editor, currentFile = null;
+let ws; // WebSocket for chat
+
+// Initialize Monaco Editor
+require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.34.1/min/vs' }});
+require(['vs/editor/editor.main'], function() {
+    editor = monaco.editor.create(document.getElementById('editor'), {
+        value: "// Start coding...\nconsole.log('Hello FriendHub!');",
+        language: 'javascript',
+        theme: 'vs-dark'
+    });
+
+    editor.onDidChangeModelContent(() => updatePreview());
+});
+
+// Utility fetch function
+async function request(url, method='GET', data=null){
+    const options = { method };
+    if(data){
+        options.headers = { 'Content-Type': 'application/json' };
+        options.body = JSON.stringify(data);
+    }
+    const res = await fetch(url, options);
+    return res.json();
+}
+
+// Load project files
+document.getElementById('load-files').addEventListener('click', async () => {
+    const username = document.getElementById('username').value;
+    const project = document.getElementById('project').value;
+    if(!username || !project) return alert("Enter username & project");
+    
+    const data = await request(`/project/${username}/${project}/files`);
+    const fileListDiv = document.getElementById('file-list');
+    if(!fileListDiv) return;
+    fileListDiv.innerHTML = '';
+
+    data.files.forEach(file => {
+        const btn = document.createElement('button');
+        btn.textContent = file;
+        btn.addEventListener('click', async () => {
+            const fileData = await request(`/project/${username}/${project}/file/${file}`);
+            editor.setValue(fileData.content);
+            currentFile = file;
+            updatePreview();
+        });
+        fileListDiv.appendChild(btn);
+    });
+});
+
+// Create new file
+document.getElementById('create-file').addEventListener('click', () => {
+    const newFile = prompt("Enter new file name:");
+    if(!newFile) return;
+    currentFile = newFile;
+    editor.setValue("// New file content\n");
+    updatePreview();
+});
+
+// Save file
+document.getElementById('save-file').addEventListener('click', async () => {
+    const username = document.getElementById('username').value;
+    const project = document.getElementById('project').value;
+    if(!currentFile) return alert("No file selected");
+
+    const content = editor.getValue();
+    await request(`/project/${username}/${project}/file`, 'POST', { filename: currentFile, content });
+    alert("File saved!");
+});
+
+// Publish project
+document.getElementById('publish-project').addEventListener('click', async () => {
+    const username = document.getElementById('username').value;
+    const project = document.getElementById('project').value;
+    const result = await request(`/project/${username}/${project}/publish`, 'POST');
+    alert(result.message);
+});
+
+// Language/theme switching
+document.getElementById('language-select').addEventListener('change', (e) => {
+    monaco.editor.setModelLanguage(editor.getModel(), e.target.value);
+});
+document.getElementById('theme-select').addEventListener('change', (e) => {
+    monaco.editor.setTheme(e.target.value);
+});
+
+// Live preview (HTML/JS only)
+function updatePreview() {
+    if(!currentFile) return;
+    const lang = document.getElementById('language-select').value;
+    const iframe = document.getElementById('preview');
+    if(lang === 'html' || currentFile.endsWith('.html')){
+        iframe.srcdoc = editor.getValue();
+    } else if(lang === 'javascript'){
+        iframe.srcdoc = `<script>${editor.getValue()}<\/script>`;
+    } else {
+        iframe.srcdoc = "<pre>" + editor.getValue() + "</pre>";
+    }
+}
+
+// --- Live chat via WebSocket ---
+function initChat(){
+    const username = document.getElementById('username').value;
+    if(!username) return;
+    ws = new WebSocket('ws://localhost:6789');
+    const chatLog = document.getElementById('chat-log');
+
+    ws.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        chatLog.innerHTML += `<div><b>${data.user}:</b> ${data.message}</div>`;
+        chatLog.scrollTop = chatLog.scrollHeight;
+    };
+
+    document.getElementById('send-message').addEventListener('click', () => {
+        const msgInput = document.getElementById('chat-message');
+        const message = msgInput.value;
+        if(!message) return;
+        ws.send(JSON.stringify({user: username, message}));
+        msgInput.value = '';
+    });
+}
+
+// Initialize chat after page load
+window.addEventListener('load', initChat);
+</script>
+</body>
+</html>
